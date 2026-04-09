@@ -73,14 +73,16 @@ def run_fci(X: np.ndarray, alpha: float = 0.01):
 
 def run_bang(X: np.ndarray):
     """
-    Run BANG (ngBap) via rpy2.
+    Run BANG (ngBap::bang) via rpy2.
 
     Prerequisites on the server:
         install.packages("remotes")
         remotes::install_github("ysamwang/ngBap")
 
-    TODO: Confirm the exact R function name and output structure, then update
-          parse_bang_result() in eval_metrics.py accordingly.
+    Function confirmed from bang/bang.R:
+        ngBap::bang(Y, K=3, level=0.01, verbose=FALSE, restrict=1)
+    where K is the degree of the non-Gaussian moment (K=3 is standard from
+    the paper's simulations) and restrict=1 tests all moments up to degree K.
     """
     try:
         import rpy2.robjects as ro
@@ -93,9 +95,7 @@ def run_bang(X: np.ndarray):
         n, p  = X.shape
         r_X   = ro.r.matrix(X.flatten(), nrow=n, ncol=p, byrow=True)
 
-        # TODO: Replace 'ngBap' below with the correct function exported by the
-        #       package (check  ls(getNamespace("ngBap"))  in R).
-        result = ngbap.ngBap(r_X)
+        result = ngbap.bang(r_X, K=3, level=0.01, verbose=False, restrict=1)
         numpy2ri.deactivate()
 
         return parse_bang_result(result, p)

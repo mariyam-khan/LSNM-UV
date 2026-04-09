@@ -158,32 +158,43 @@ def parse_fci_result(pag, p: int) -> tuple:
 
 def parse_bang_result(r_output, p: int) -> tuple:
     """
-    Parse BANG (ngBap) R output into (A_est, B_est).
+    Parse ngBap::bang() R output into (A_est, B_est).
 
-    ngBap returns a list with two matrices:
-        r_output[0]  — directed adjacency  (D[i,j]=1  →  x_j → x_i)
-        r_output[1]  — bidirected adjacency (B[i,j]=1  →  x_i ↔ x_j)
+    ngBap::bang returns a named R list.  Relevant fields (confirmed from
+    bang/bang.R lines 222-224):
 
-    NOTE: Verify against actual ngBap output.  Adjust indices / encoding if
-    the R package uses a different convention.
+        r_output.rx2('dEdge')
+            Binary directed adjacency matrix.
+            dEdge[i,j] = 1  means  x_j → x_i  (j is a parent of i).
+            Matches our convention: A[i,j] = 1  →  x_j → x_i.
+
+        r_output.rx2('bEdge')
+            Bidirected adjacency matrix = siblings + identity.
+            bEdge[i,j] = 1 (off-diagonal)  means  x_i ↔ x_j.
+            The diagonal is always 1 (added by construction in R) and must
+            be zeroed before use.
     """
-    import numpy as np
     A_est = np.zeros((p, p), dtype=int)
     B_est = np.zeros((p, p), dtype=int)
 
     try:
-        D = np.array(r_output[0])   # directed part
-        B = np.array(r_output[1])   # bidirected part
+        # Access named list elements via rpy2's .rx2() method
+        D = np.array(r_output.rx2('dEdge')).reshape(p, p)
+        B = np.array(r_output.rx2('bEdge')).reshape(p, p)
 
-        for i in range(p):
-            for j in range(p):
-                if D[i, j] == 1:
-                    A_est[i, j] = 1
+        # Remove the diagonal that R added (bEdge = siblings + diag(1,...,1))
+        np.fill_diagonal(B, 0)
+
+        # Directed edges: dEdge[i,j]=1 → x_j → x_i
+        A_est = (D != 0).astype(int)
+
+        # Bidirected edges: treat as symmetric, record on upper + lower triangle
         for i in range(p):
             for j in range(i + 1, p):
                 if B[i, j] == 1 or B[j, i] == 1:
                     B_est[i, j] = 1
                     B_est[j, i] = 1
+
     except Exception as e:
         print(f"[parse_bang_result] Warning: {e}")
 
