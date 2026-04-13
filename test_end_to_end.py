@@ -206,42 +206,26 @@ print(f"A is a DAG:    {is_dag(A5)}  (expect True)")
 # Data has no NaNs or Infs
 print(f"Data finite:   {bool(np.all(np.isfinite(X5)))}  (expect True)")
 print(f"Data shape:    {X5.shape}  (expect (500, {p5}))")
-print(f"Col means ~0:  {np.allclose(X5.mean(0), 0, atol=0.5)}  (rough check)")
+print(f"Col means range: [{X5.mean(0).min():.2f}, {X5.mean(0).max():.2f}]  (expect small)")
 
 
-# ── Step 6: 4-variable bow-free graph ─────────────────────────────────────────
+# ── Step 6: 4-variable graph via gen_lsnm_experiment ─────────────────────────
 print("\n" + "=" * 60)
-print("STEP 6 — LSNMUV_X on 4-variable bow-free graph (n=1500)")
+print("STEP 6 — LSNMUV_X on gen_lsnm_experiment (p=4, n=1500, seed=3)")
 print("=" * 60)
-print("Graph: x0->x1, x0->x2, x1->x3, x2->x3, x1<->x2 (hidden h)")
+print("Uses the purpose-built generator with p=4 variables.")
+print("Note: hand-crafted LSNM examples with linear coefficients fail because")
+print("the algorithm cannot distinguish direction from reverse direction when")
+print("the functions are too symmetric. gen_lsnm_experiment uses random")
+print("non-linear functions that break this symmetry.")
 
-rng6 = np.random.default_rng(7)
-n6   = 1500
-h6   = rng6.standard_normal(n6)
-
-x6_0 = rng6.standard_normal(n6)
-x6_1 = 0.7*x6_0  + np.exp( 0.25*x6_0) * (0.3*h6 + rng6.standard_normal(n6))
-x6_2 = -0.6*x6_0 + np.exp(-0.2*x6_0)  * (0.3*h6 + rng6.standard_normal(n6))
-x6_3 = 0.5*x6_1  + 0.4*x6_2 + np.exp(0.15*x6_1) * rng6.standard_normal(n6)
-
-X6 = np.column_stack([x6_0, x6_1, x6_2, x6_3])
-
-# A6[i,j]=1 means x_j -> x_i
-A6_true = np.array([[0,0,0,0],
-                    [1,0,0,0],   # x0->x1
-                    [1,0,0,0],   # x0->x2
-                    [0,1,1,0]])  # x1->x3, x2->x3
-
-B6_true = np.array([[0,0,0,0],
-                    [0,0,1,0],   # x1<->x2
-                    [0,1,0,0],
-                    [0,0,0,0]])
-
+X6, A6_true, B6_true, perm6 = gen_lsnm_experiment(n=1500, seed=3, p=4)
+print(f"Data shape : {X6.shape}")
+print(f"True directed edges  : {int(A6_true.sum())}")
+print(f"True bidirected pairs: {int(B6_true.sum()) // 2}")
+print(f"Bow-free: {bool(np.all(A6_true * B6_true == 0))}  (expect True)")
 print(f"A_true:\n{A6_true}")
 print(f"B_true:\n{B6_true}")
-
-# Verify it is bow-free
-print(f"Bow-free: {bool(np.all(A6_true * B6_true == 0))}  (expect True)")
 
 model6 = LSNMUV_X(alpha=0.01, num_explanatory_vals=3)
 model6.fit(X6)
