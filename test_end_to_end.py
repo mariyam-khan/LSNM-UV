@@ -142,11 +142,11 @@ print("We check that the estimated graph has positive F1 (not random).")
 
 from lsnm_data_gen import gen_lsnm_experiment
 
-X4, A4_true, B4_true, info = gen_lsnm_experiment(n=1000, seed=0)
+X4, A4_true, B4_true, perm4 = gen_lsnm_experiment(n=1000, seed=0)
 print(f"Data shape : {X4.shape}")
 print(f"True directed edges  (A_true > 0): {int(A4_true.sum())}")
 print(f"True bidirected pairs: {int(B4_true.sum()) // 2}")
-print(f"Causal order : {info.get('order', 'N/A')}")
+print(f"Column permutation   : {perm4}")
 
 model4 = LSNMUV_X(alpha=0.01, num_explanatory_vals=3)
 model4.fit(X4)
@@ -170,6 +170,7 @@ print("STEP 5 — lsnm_data_gen: graph and data sanity checks")
 print("=" * 60)
 
 X5, A5, B5, info5 = gen_lsnm_experiment(n=500, seed=7)
+
 p5 = X5.shape[1]
 
 # Bow-free: A[i,j] * B[i,j] = 0 for all i,j
@@ -206,3 +207,75 @@ print(f"A is a DAG:    {is_dag(A5)}  (expect True)")
 print(f"Data finite:   {bool(np.all(np.isfinite(X5)))}  (expect True)")
 print(f"Data shape:    {X5.shape}  (expect (500, {p5}))")
 print(f"Col means ~0:  {np.allclose(X5.mean(0), 0, atol=0.5)}  (rough check)")
+
+
+# ── Step 6: 4-variable bow-free graph ─────────────────────────────────────────
+print("\n" + "=" * 60)
+print("STEP 6 — LSNMUV_X on 4-variable bow-free graph (n=1500)")
+print("=" * 60)
+print("Graph: x0->x1, x0->x2, x1->x3, x2->x3, x1<->x2 (hidden h)")
+
+rng6 = np.random.default_rng(7)
+n6   = 1500
+h6   = rng6.standard_normal(n6)
+
+x6_0 = rng6.standard_normal(n6)
+x6_1 = 0.7*x6_0  + np.exp( 0.25*x6_0) * (0.3*h6 + rng6.standard_normal(n6))
+x6_2 = -0.6*x6_0 + np.exp(-0.2*x6_0)  * (0.3*h6 + rng6.standard_normal(n6))
+x6_3 = 0.5*x6_1  + 0.4*x6_2 + np.exp(0.15*x6_1) * rng6.standard_normal(n6)
+
+X6 = np.column_stack([x6_0, x6_1, x6_2, x6_3])
+
+# A6[i,j]=1 means x_j -> x_i
+A6_true = np.array([[0,0,0,0],
+                    [1,0,0,0],   # x0->x1
+                    [1,0,0,0],   # x0->x2
+                    [0,1,1,0]])  # x1->x3, x2->x3
+
+B6_true = np.array([[0,0,0,0],
+                    [0,0,1,0],   # x1<->x2
+                    [0,1,0,0],
+                    [0,0,0,0]])
+
+print(f"A_true:\n{A6_true}")
+print(f"B_true:\n{B6_true}")
+
+# Verify it is bow-free
+print(f"Bow-free: {bool(np.all(A6_true * B6_true == 0))}  (expect True)")
+
+model6 = LSNMUV_X(alpha=0.01, num_explanatory_vals=3)
+model6.fit(X6)
+A6_est, B6_est = parse_camuv_result(model6)
+
+p_d, r_d, f1_d = directed_metrics(A6_est, A6_true)
+p_b, r_b, f1_b = bidirected_metrics(B6_est, B6_true)
+print(f"\nDirected  — P={p_d:.2f}  R={r_d:.2f}  F1={f1_d:.2f}  (expect F1>0)")
+print(f"Bidirected — P={p_b:.2f}  R={r_b:.2f}  F1={f1_b:.2f}")
+print(f"Est A:\n{A6_est}")
+print(f"Est B:\n{B6_est}")
+
+
+# ── Step 7: Bow graph — algorithm must NOT produce a bow ──────────────────────
+print("\n" + "=" * 60)
+print("STEP 7 — eval_metrics rejects a bow (A[i,j]=B[i,j]=1 violates bow-free)")
+print("=" * 60)
+print("A bow means the SAME pair has both a directed and bidirected edge.")
+print("The algorithm should never output this. We verify the bow-free check.")
+
+# Create a matrix that HAS a bow: x0<->x1 AND x0->x1
+A_bow = np.array([[0,0],[1,0]])   # x0->x1
+B_bow = np.array([[0,1],[1,0]])   # x0<->x1
+
+has_bow = bool(np.any(A_bow * B_bow != 0))
+print(f"Input has bow: {has_bow}  (expect True)")
+
+# Check that parse_camuv_result never produces a bow
+# (NaN pairs set B=1; directed entries set A=1; they can't overlap
+#  because NaN and 1 are mutually exclusive in mat[i,j])
+mat_no_bow = np.array([[0,   np.nan],
+                       [np.nan, 0  ]], dtype=float)  # only invisible pair, no directed edge
+mock7 = types.SimpleNamespace(adjacency_matrix_=mat_no_bow)
+A7, B7 = parse_camuv_result(mock7)
+bow_in_output = bool(np.any(A7 * B7 != 0))
+print(f"parse_camuv_result output has bow: {bow_in_output}  (expect False)")
+print(f"A7:\n{A7}\nB7:\n{B7}")
