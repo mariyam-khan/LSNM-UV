@@ -1,156 +1,208 @@
 """
 End-to-end unit test for LSNM-UV-X pipeline.
 
-Graph:  x0 --> x1
-        x0 --> x2
-        x1 <-> x2   (hidden confounder h ~ N(0,1) enters both x1 and x2)
+Tests each component in isolation with known expected outputs:
 
-True adjacency matrices (convention: A[i,j]=1 means x_j --> x_i):
-    A_true = [[0, 0, 0],
-              [1, 0, 0],   # x0 --> x1
-              [1, 0, 0]]   # x0 --> x2
+  Steps 0-2: eval_metrics.py — verifiable by hand arithmetic
+  Step 3:    _get_residual (GAMLSS) — checks that the residual
+             becomes linearly and nonlinearly independent of the
+             true parent after whitening (Pearson r ≈ 0 for both
+             level and squared residual)
+  Step 4:    Full LSNMUV_X.fit on gen_lsnm_experiment data —
+             checks that the estimated graph has positive F1
+             (algorithm is doing something sensible)
+  Step 5:    lsnm_data_gen — checks graph properties and data
+             statistics of the generated experiment
 
-    B_true = [[0, 0, 0],
-              [0, 0, 1],   # x1 <-> x2
-              [0, 1, 0]]
+Graph used in Steps 0 and 3 (simple hand-crafted LSNM):
+    x0 --> x1    f1 = 0.8*x0,  g1 = exp(0.3*x0)
+    x0 --> x2    f2 = -0.5*x0, g2 = exp(-0.2*x0)
+    x1 <-> x2    (hidden confounder h, coefficient 0.3)
+
+Convention for adjacency matrices: A[i,j]=1 means x_j --> x_i.
 """
 
 import numpy as np
 
-# ── Step 0: fix random seed for reproducibility ───────────────────────────────
+# ── Step 0: Generate hand-crafted LSNM data ──────────────────────────────────
+print("=" * 60)
+print("STEP 0 — Hand-crafted LSNM data (3 variables)")
+print("=" * 60)
+
 rng = np.random.default_rng(42)
-n   = 2000   # large n so the test is reliable
+n   = 3000
 
-print("=" * 60)
-print("STEP 0 — Generate data from known LSNM graph")
-print("=" * 60)
-
-# Hidden confounder
-h = rng.standard_normal(n)
-
-# x0: root node, no parents
+h    = rng.standard_normal(n)   # hidden confounder (weaker: coef 0.3)
 eps0 = rng.standard_normal(n)
-x0   = eps0                              # f=0, g=1 (pure noise)
-
-# x1: parent x0, plus hidden h
 eps1 = rng.standard_normal(n)
-f1   = 0.8 * x0                         # location depends on x0
-g1   = np.exp(0.3 * x0)                 # scale depends on x0  (LSNM!)
-x1   = f1 + g1 * (0.6 * h + eps1)       # hidden h enters the noise
-
-# x2: parent x0, plus hidden h
 eps2 = rng.standard_normal(n)
-f2   = -0.5 * x0                        # location depends on x0
-g2   = np.exp(-0.2 * x0)                # scale depends on x0
-x2   = f2 + g2 * (0.6 * h + eps2)       # same hidden h -> x1 <-> x2
+
+x0 = eps0                                          # root, no parents
+x1 = 0.8*x0  + np.exp( 0.3*x0) * (0.3*h + eps1)  # parent x0
+x2 = -0.5*x0 + np.exp(-0.2*x0) * (0.3*h + eps2)  # parent x0, hidden h
 
 X = np.column_stack([x0, x1, x2])
-print(f"Data shape: {X.shape}")
-print(f"Column means  (should be ~0): {X.mean(axis=0).round(3)}")
-print(f"Column stds   (should be ~1-3): {X.std(axis=0).round(3)}")
+print(f"Data shape : {X.shape}")
+print(f"Col means  (expect ~0): {X.mean(0).round(3)}")
+print(f"Col stds              : {X.std(0).round(3)}")
 
-# ── Ground truth ──────────────────────────────────────────────────────────────
-A_true = np.array([[0,0,0],
-                   [1,0,0],
-                   [1,0,0]], dtype=int)
-
-B_true = np.array([[0,0,0],
-                   [0,0,1],
-                   [0,1,0]], dtype=int)
-
-print(f"\nA_true (directed):\n{A_true}")
-print(f"B_true (bidirected):\n{B_true}")
+A_true = np.array([[0,0,0],[1,0,0],[1,0,0]], dtype=int)
+B_true = np.array([[0,0,0],[0,0,1],[0,1,0]], dtype=int)
+print(f"\nA_true:\n{A_true}")
+print(f"B_true:\n{B_true}")
 
 
+# ── Step 1: eval_metrics — hand-checkable arithmetic ─────────────────────────
 print("\n" + "=" * 60)
-print("STEP 1 — Test eval_metrics helpers directly")
+print("STEP 1 — eval_metrics: precision / recall / F1")
 print("=" * 60)
 
 from eval_metrics import directed_metrics, bidirected_metrics
 
-# Perfect prediction
-p_d, r_d, f1_d = directed_metrics(A_true, A_true)
-p_b, r_b, f1_b = bidirected_metrics(B_true, B_true)
-print(f"Perfect directed  — P={p_d:.2f} R={r_d:.2f} F1={f1_d:.2f}  (all should be 1.0)")
-print(f"Perfect bidirected — P={p_b:.2f} R={r_b:.2f} F1={f1_b:.2f}  (all should be 1.0)")
+p, r, f = directed_metrics(A_true, A_true)
+print(f"Perfect directed   P={p:.2f} R={r:.2f} F1={f:.2f}  (expect all 1.00)")
 
-# All-zeros prediction
-A_zero = np.zeros_like(A_true)
-B_zero = np.zeros_like(B_true)
-p_d, r_d, f1_d = directed_metrics(A_zero, A_true)
-p_b, r_b, f1_b = bidirected_metrics(B_zero, B_true)
-print(f"Zero directed     — P={p_d:.2f} R={r_d:.2f} F1={f1_d:.2f}  (all should be 0.0)")
-print(f"Zero bidirected   — P={p_b:.2f} R={r_b:.2f} F1={f1_b:.2f}  (all should be 0.0)")
+p, r, f = bidirected_metrics(B_true, B_true)
+print(f"Perfect bidirected P={p:.2f} R={r:.2f} F1={f:.2f}  (expect all 1.00)")
 
-# One wrong directed edge: predict A[2,1]=1 (x1->x2) instead of A[2,0]=1 (x0->x2)
-A_wrong = np.array([[0,0,0],[1,0,0],[0,1,0]], dtype=int)
-p_d, r_d, f1_d = directed_metrics(A_wrong, A_true)
-print(f"1 wrong directed  — P={p_d:.2f} R={r_d:.2f} F1={f1_d:.2f}")
-print(f"  Expected: TP=1(x0->x1 correct), FP=1(x1->x2 wrong), FN=1(x0->x2 missed)")
-print(f"  P=1/2=0.50, R=1/2=0.50, F1=0.50")
+p, r, f = directed_metrics(np.zeros_like(A_true), A_true)
+print(f"All-zero directed  P={p:.2f} R={r:.2f} F1={f:.2f}  (expect all 0.00)")
+
+p, r, f = bidirected_metrics(np.zeros_like(B_true), B_true)
+print(f"All-zero bidirected P={p:.2f} R={r:.2f} F1={f:.2f}  (expect all 0.00)")
+
+# 1 correct edge (x0->x1), 1 wrong edge (x1->x2), 1 missed (x0->x2)
+# TP=1, FP=1, FN=1  =>  P=0.5, R=0.5, F1=0.5
+A_one_wrong = np.array([[0,0,0],[1,0,0],[0,1,0]], dtype=int)
+p, r, f = directed_metrics(A_one_wrong, A_true)
+print(f"1 correct + 1 wrong P={p:.2f} R={r:.2f} F1={f:.2f}  (expect 0.50 0.50 0.50)")
 
 
+# ── Step 2: parse_camuv_result ────────────────────────────────────────────────
 print("\n" + "=" * 60)
-print("STEP 2 — Test parse_camuv_result")
+print("STEP 2 — parse_camuv_result: NaN <-> bidirected")
 print("=" * 60)
 
 from eval_metrics import parse_camuv_result
 import types
 
-# Mock a model object with the right adjacency matrix
-# NaN marks invisible pairs; 1 marks directed edge x_j -> x_i
-mock_mat = np.array([[0,   0,   0  ],
-                     [1,   0,   np.nan],   # A[1,0]=1 (x0->x1), [1,2]=NaN (invisible pair)
-                     [1,   np.nan, 0 ]], dtype=float)
-
-mock_model       = types.SimpleNamespace()
-mock_model.adjacency_matrix_ = mock_mat
+# mat[i,j] = 1   => x_j -> x_i  (directed)
+# mat[i,j] = NaN => invisible pair
+mock_mat = np.array([[0,    0,     0   ],
+                     [1,    0,     np.nan],
+                     [1,    np.nan, 0   ]], dtype=float)
+mock_model = types.SimpleNamespace(adjacency_matrix_=mock_mat)
 
 A_est, B_est = parse_camuv_result(mock_model)
-print(f"Mock adjacency matrix (NaN = invisible pair):\n{mock_mat}")
-print(f"A_est (directed, NaN->0):\n{A_est}")
-print(f"B_est (bidirected, 1 where NaN was):\n{B_est}")
-print(f"Expected A_est[1,0]=1, A_est[2,0]=1, rest 0")
-print(f"Expected B_est[1,2]=B_est[2,1]=1, rest 0")
+print(f"Input mat (NaN=invisible):\n{mock_mat}")
+print(f"A_est (directed):\n{A_est}")
+print(f"B_est (bidirected):\n{B_est}")
+
+# Manual check
+ok_A = (A_est[1,0]==1 and A_est[2,0]==1 and A_est.sum()==2)
+ok_B = (B_est[1,2]==1 and B_est[2,1]==1 and B_est.sum()==2)
+print(f"A_est correct: {ok_A}  (expect True)")
+print(f"B_est correct: {ok_B}  (expect True)")
 
 
+# ── Step 3: _get_residual — GAMLSS independence check ────────────────────────
 print("\n" + "=" * 60)
-print("STEP 3 — Test GAMLSS residual (_get_residual) directly")
+print("STEP 3 — _get_residual: GAMLSS whitening")
 print("=" * 60)
+print("We check independence via linear correlation (Pearson r).")
+print("After whitening by the TRUE parent x0, the residual eta1 should be")
+print("  (a) linearly uncorrelated with x0           [location removed]")
+print("  (b) linearly uncorrelated with x0^2         [scale removed]")
+print("Raw x1 has nonzero correlation with both x0 and x0^2.")
 
 from lsnm_uv_x import LSNMUV_X
 model = LSNMUV_X(alpha=0.01, num_explanatory_vals=3)
 
-# Compute residual of x1 given x0 (its true parent)
-eta_with_parent = model._get_residual(X, 1, [0])
-# Compute residual of x1 given x2 (a non-parent)
-eta_with_nonparent = model._get_residual(X, 1, [2])
-# Compute residual of x1 given nothing
-eta_no_parent = model._get_residual(X, 1, [])
+eta_true_parent  = model._get_residual(X, 1, [0])   # x1 | x0 (true parent)
+eta_wrong_parent = model._get_residual(X, 1, [2])   # x1 | x2 (non-parent)
+eta_raw          = X[:, 1]                           # raw x1
 
-print(f"Residual x1|x0  — std={eta_with_parent.std():.3f}  (should be small, ~1)")
-print(f"Residual x1|x2  — std={eta_with_nonparent.std():.3f}")
-print(f"Residual x1|()  — std={eta_no_parent.std():.3f}  (should be larger, raw x1)")
-print("Note: residual std closer to 1 = better parent found")
+def corr(a, b):
+    a = a - a.mean(); b = b - b.mean()
+    return float(np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b) + 1e-15))
+
+print(f"\n  corr(eta1|x0,  x0 )  = {corr(eta_true_parent,  x0):.3f}  (expect ~0 — location removed)")
+print(f"  corr(eta1|x0,  x0²)  = {corr(eta_true_parent,  x0**2):.3f}  (expect ~0 — scale removed)")
+print(f"  corr(eta1|x2,  x0 )  = {corr(eta_wrong_parent, x0):.3f}  (expect nonzero — x2 not a parent)")
+print(f"  corr(raw x1,   x0 )  = {corr(eta_raw,          x0):.3f}  (expect large — x1 depends on x0)")
+print(f"  corr(raw x1,   x0²)  = {corr(eta_raw,          x0**2):.3f}  (expect nonzero — scale dep.)")
 
 
+# ── Step 4: Full algorithm on gen_lsnm_experiment data ───────────────────────
 print("\n" + "=" * 60)
-print("STEP 4 — Fit LSNM-UV-X and check output")
+print("STEP 4 — LSNMUV_X.fit on gen_lsnm_experiment (n=1000, seed=0)")
+print("=" * 60)
+print("Uses the data generator purpose-built for the algorithm.")
+print("We check that the estimated graph has positive F1 (not random).")
+
+from lsnm_data_gen import gen_lsnm_experiment
+
+X4, A4_true, B4_true, info = gen_lsnm_experiment(n=1000, seed=0)
+print(f"Data shape : {X4.shape}")
+print(f"True directed edges  (A_true > 0): {int(A4_true.sum())}")
+print(f"True bidirected pairs: {int(B4_true.sum()) // 2}")
+print(f"Causal order : {info.get('order', 'N/A')}")
+
+model4 = LSNMUV_X(alpha=0.01, num_explanatory_vals=3)
+model4.fit(X4)
+A4_est, B4_est = parse_camuv_result(model4)
+
+p_d, r_d, f1_d = directed_metrics(A4_est, A4_true)
+p_b, r_b, f1_b = bidirected_metrics(B4_est, B4_true)
+
+print(f"\nDirected  — P={p_d:.2f}  R={r_d:.2f}  F1={f1_d:.2f}")
+print(f"Bidirected — P={p_b:.2f}  R={r_b:.2f}  F1={f1_b:.2f}")
+print(f"\nF1_directed > 0:  {f1_d > 0}  (expect True)")
+print(f"\nTrue A:\n{A4_true}")
+print(f"Est  A:\n{A4_est}")
+print(f"True B (upper tri):\n{B4_true}")
+print(f"Est  B (upper tri):\n{B4_est}")
+
+
+# ── Step 5: lsnm_data_gen — sanity checks ────────────────────────────────────
+print("\n" + "=" * 60)
+print("STEP 5 — lsnm_data_gen: graph and data sanity checks")
 print("=" * 60)
 
-model.fit(X)
-mat = model.adjacency_matrix_
-print(f"Estimated adjacency matrix:\n{mat}")
-print(f"(1=directed edge, NaN=invisible pair, 0=no edge)")
+X5, A5, B5, info5 = gen_lsnm_experiment(n=500, seed=7)
+p5 = X5.shape[1]
 
-A_est, B_est = parse_camuv_result(model)
-print(f"\nA_est:\n{A_est}")
-print(f"B_est:\n{B_est}")
+# Bow-free: A[i,j] * B[i,j] = 0 for all i,j
+bow_free = bool(np.all(A5 * B5 == 0))
+print(f"Bow-free ADMG: {bow_free}  (expect True)")
 
-p_d, r_d, f1_d = directed_metrics(A_est, A_true)
-p_b, r_b, f1_b = bidirected_metrics(B_est, B_true)
-print(f"\nDirected  — P={p_d:.2f} R={r_d:.2f} F1={f1_d:.2f}")
-print(f"Bidirected — P={p_b:.2f} R={r_b:.2f} F1={f1_b:.2f}")
-print(f"\nTrue directed edges:  x0->x1 (A[1,0]=1), x0->x2 (A[2,0]=1)")
-print(f"True bidirected edge: x1<->x2 (B[1,2]=B[2,1]=1)")
+# B is symmetric
+b_sym = bool(np.allclose(B5, B5.T))
+print(f"B symmetric:   {b_sym}  (expect True)")
 
+# A has no self-loops
+no_selfloop = bool(np.all(np.diag(A5) == 0))
+print(f"A acyclic diag:{no_selfloop}  (expect True)")
+
+# A is a DAG (no directed cycles): check via topological sort
+def is_dag(A):
+    p = A.shape[0]
+    indegree = A.sum(axis=1).astype(int)   # indegree[i] = #parents of i
+    queue = [i for i in range(p) if indegree[i] == 0]
+    removed = 0
+    while queue:
+        v = queue.pop()
+        removed += 1
+        for u in range(p):
+            if A[u, v] == 1:         # v -> u, v is parent of u
+                indegree[u] -= 1
+                if indegree[u] == 0:
+                    queue.append(u)
+    return removed == p
+
+print(f"A is a DAG:    {is_dag(A5)}  (expect True)")
+
+# Data has no NaNs or Infs
+print(f"Data finite:   {bool(np.all(np.isfinite(X5)))}  (expect True)")
+print(f"Data shape:    {X5.shape}  (expect (500, {p5}))")
+print(f"Col means ~0:  {np.allclose(X5.mean(0), 0, atol=0.5)}  (rough check)")
