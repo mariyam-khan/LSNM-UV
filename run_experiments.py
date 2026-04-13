@@ -87,16 +87,15 @@ def run_bang(X: np.ndarray):
     try:
         import rpy2.robjects as ro
         from rpy2.robjects.packages import importr
-        import rpy2.robjects.numpy2ri as numpy2ri
+        from rpy2.robjects import numpy2ri
 
-        numpy2ri.activate()
+        conv = numpy2ri.converter
         ngbap = importr("ngBap")
 
-        n, p  = X.shape
-        r_X   = ro.r.matrix(X.flatten(), nrow=n, ncol=p, byrow=True)
-
-        result = ngbap.bang(r_X, K=3, level=0.01, verbose=False, restrict=1)
-        numpy2ri.deactivate()
+        n, p = X.shape
+        with conv.context():
+            r_X = ro.r.matrix(ro.FloatVector(X.flatten()), nrow=n, ncol=p, byrow=True)
+            result = ngbap.bang(r_X, K=3, level=0.01, verbose=False, restrict=1)
 
         return parse_bang_result(result, p)
 
