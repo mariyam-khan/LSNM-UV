@@ -178,9 +178,13 @@ def parse_bang_result(r_output, p: int) -> tuple:
     B_est = np.zeros((p, p), dtype=int)
 
     try:
-        # Access named list elements via rpy2's .rx2() method
-        D = np.array(r_output.rx2('dEdge')).reshape(p, p)
-        B = np.array(r_output.rx2('bEdge')).reshape(p, p)
+        # Access named list elements — try rx2 first, fall back to [] for newer rpy2
+        try:
+            D = np.array(r_output.rx2('dEdge')).reshape(p, p)
+            B = np.array(r_output.rx2('bEdge')).reshape(p, p)
+        except AttributeError:
+            D = np.array(r_output['dEdge']).reshape(p, p)
+            B = np.array(r_output['bEdge']).reshape(p, p)
 
         # Remove the diagonal that R added (bEdge = siblings + diag(1,...,1))
         np.fill_diagonal(B, 0)
