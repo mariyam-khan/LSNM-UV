@@ -133,18 +133,20 @@ def run_single_trial(
     rows = []
     for name, fn in methods.items():
         t0 = time.perf_counter()
+        A_est = B_est = None
+        failed = False
         try:
             A_est, B_est = fn()
         except Exception as e:
             print(f"  [{name}] n={n} seed={seed}: {e}")
-            A_est = np.zeros_like(A_true, dtype=float)
-            B_est = np.zeros_like(B_true, dtype=float)
+            failed = True
         runtime = time.perf_counter() - t0
 
-        if A_est is None:
-            A_est = np.zeros_like(A_true, dtype=float)
-        if B_est is None:
-            B_est = np.zeros_like(B_true, dtype=float)
+        # Skip failed trials entirely rather than imputing zeros.
+        # Imputing zeros would treat a crash as "predicted no edges",
+        # deflating recall/F1 and biasing per-method averages.
+        if failed or A_est is None or B_est is None:
+            continue
 
         prec_d, rec_d, f1_d = directed_metrics(A_est, A_true)
         prec_b, rec_b, f1_b = bidirected_metrics(B_est, B_true)
@@ -284,30 +286,31 @@ def plot_results(
 
 def plot_bidir_results(
     df:        pd.DataFrame,
-    method:    str = "LSNM-UV-X",
     save_path: str = "figure_section6_bidir.png",
 ):
     """
-    UBP/UCP identification performance (precision/recall/F1 vs sample size)
-    for a single method.  Reproduces Maeda21 Figure 6.
+    UBP/UCP identification F-measure vs sample size, all methods on one figure.
+    Mirrors the structure of plot_results so directed and bidirected figures
+    are directly comparable.
     """
     import matplotlib.pyplot as plt
 
-    sub_df = df[df["method"] == method]
-    n_list = sorted(sub_df["n"].unique())
+    methods = df["method"].unique()
+    cols    = ["prec_bidir", "rec_bidir", "f1_bidir"]
+    titles  = ["Average Precision (UBP/UCP)", "Average Recall (UBP/UCP)",
+               "Average F-measure (UBP/UCP)"]
 
-    cols   = ["prec_bidir", "rec_bidir", "f1_bidir"]
-    labels = ["average precision", "average recall", "average F-measure"]
+    fig, axes = plt.subplots(1, 3, figsize=(14, 4), sharey=False)
+    for ax, col, title in zip(axes, cols, titles):
+        for method in methods:
+            sub = df[df["method"] == method].groupby("n")[col].mean()
+            ax.plot(sub.index, sub.values, marker="s", label=method)
+        ax.set_xlabel("sample size")
+        ax.set_ylabel(title.lower())
+        ax.set_title(title)
+        ax.set_ylim(0, 1.05)
+        ax.legend(fontsize=8)
 
-    fig, ax = plt.subplots(figsize=(6, 4))
-    for col, label in zip(cols, labels):
-        vals = sub_df.groupby("n")[col].mean()
-        ax.plot(vals.index, vals.values, marker="s", label=label)
-    ax.set_xlabel("sample size")
-    ax.set_ylabel("value")
-    ax.set_title(f"{method}: UBP/UCP identification")
-    ax.set_ylim(0, 1.05)
-    ax.legend()
     plt.tight_layout()
     plt.savefig(save_path, dpi=150)
     print(f"Saved → {save_path}")

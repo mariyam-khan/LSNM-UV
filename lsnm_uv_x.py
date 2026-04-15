@@ -42,48 +42,106 @@ class LSNMUV(CAMUV):
 
     def _get_residual(self, X: np.ndarray, explained_i: int, explanatory_ids) -> np.ndarray:
         """
-        LSNM residual  η_i = (x_i − f̂(K_i)) / ĝ(K_i).
+        Compute the LSNM residual  eta_hat_i = (x_i - f_hat_i^1(K_i)) / g_hat_i^1(K_i).
 
-        Two-step GAMLSS approximation:
-          1. Fit location:  f̂  = LinearGAM(X_K).predict
-          2. Fit scale:     ĝ  = exp( 0.5 · LinearGAM(X_K).predict( log(r²) ) )
-             where  r = x_i − f̂(X_K)  is the location residual.
+        This implements paper Eq. (14) via a two-step procedure.
 
-        Falls back to the plain additive residual if fitting fails (e.g. when
-        the conditioning set is very small or near-degenerate).
+        The LSNM model for x_i is (paper Eq. 2):
+            x_i = f_i^1(K_i) + g_i^1(K_i) * eta_i
+
+        where K_i = explanatory_ids are the observed parents of x_i.
+        Both f_i^1 (location) and g_i^1 (scale) are unknown nonlinear functions
+        of K_i that must be estimated from data before eta_i can be recovered.
+
+        A LinearGAM fits an additive spline model:
+            y = beta_0 + sum_k s_k(x_k) + eps
+        where each s_k is a smooth spline over one predictor.  LinearGAM().fit(X_K, y)
+        learns the spline coefficients; .predict(X_K) returns the fitted values
+            y_hat = beta_0_hat + sum_k s_hat_k(x_k)
+        which approximates E[y | K_i] nonparametrically.
+
+        Step 1 uses LinearGAM to estimate f_i^1(K_i) = E[x_i | K_i].
+        Step 2 uses LinearGAM again on log(r_i^2) to estimate 2*log(g_i^1(K_i)).
+
+        Falls back to the plain additive residual (= CAM-UV behaviour) if either
+        GAM fit fails (e.g. constant feature, too few samples).
         """
         explanatory_ids = list(explanatory_ids)
 
+        # K_i = empty: no observed parents to regress out.
+        # eta_hat_i = x_i  (paper Eq. 14 with f_i^1 = 0, g_i^1 = 1)
         if len(explanatory_ids) == 0:
             return X[:, explained_i]
 
-        X_expl = X[:, explanatory_ids]
-        xi     = X[:, explained_i]
+        X_expl = X[:, explanatory_ids]   # shape (n, |K_i|) -- values of observed parents K_i
+        xi     = X[:, explained_i]       # shape (n,)       -- values of x_i
 
-        # ── Step 1: location ─────────────────────────────────────────────────
-        # Fit a nonparametric regression f̂(K_i) ≈ E[x_i | K_i].
-        # If fitting fails (e.g. constant feature, too few samples), fall back
-        # to demeaning only — still better than returning the raw signal.
+        # ---------------------------------------------------------------------
+        # Step 1 -- estimate location f_i^1(K_i) and compute location residual r_i
+        #
+        # Model:  x_i = f_i^1(K_i) + g_i^1(K_i) * eta_i
+        #
+        # Fit LinearGAM:
+        #   x_i = beta_0 + sum_{k in K_i} s_k(x_k) + eps
+        #
+        # Prediction:
+        #   f_hat_i^1(K_i) = beta_0_hat + sum_k s_hat_k(x_k)
+        #                  = E_hat[x_i | K_i]
+        #
+        # Location residual:
+        #   r_i = x_i - f_hat_i^1(K_i)
+        #       ~= g_i^1(K_i) * eta_i          (scale g_i^1 still present)
+        #
+        # This is the same step as Pham's _get_residual.  For homoscedastic
+        # models (g_i^1 = const) r_i already equals eta_i up to a constant.
+        # For LSNM, the scale g_i^1(K_i) must still be removed (Step 2).
+        # ---------------------------------------------------------------------
         try:
             gam_loc   = LinearGAM().fit(X_expl, xi)
-            loc_pred  = gam_loc.predict(X_expl)
-            loc_resid = xi - loc_pred
+            loc_pred  = gam_loc.predict(X_expl)    # f_hat_i^1(K_i)
+            loc_resid = xi - loc_pred               # r_i = x_i - f_hat_i^1(K_i)
         except Exception:
+            # Fallback: demean only (no spline fit)
             loc_resid = xi - xi.mean()
 
-        # ── Step 2: scale via log(residual²) ─────────────────────────────────
-        # Fit ĝ(K_i) ≈ E[|x_i − f̂| | K_i] by regressing log(r²) on K_i and
-        # exponentiating (0.5 * prediction recovers log|r|, so exp gives |r̂|).
-        # If scale fitting fails, fall back to the additive residual (= CAM-UV
-        # behaviour), which is always well-defined because loc_resid already exists.
+        # ---------------------------------------------------------------------
+        # Step 2 -- estimate scale g_i^1(K_i) from log(r_i^2) and divide
+        #
+        # From Step 1:  r_i ~= g_i^1(K_i) * eta_i
+        #
+        # Squaring and taking log:
+        #   log(r_i^2) = 2 * log(g_i^1(K_i)) + log(eta_i^2)
+        #                \_____________________/  \__________/
+        #                  depends on K_i          noise term, indep of K_i
+        #
+        # Therefore:
+        #   E[ log(r_i^2) | K_i ] = 2 * log(g_i^1(K_i))
+        #
+        # Fit LinearGAM on log(r_i^2) to estimate this conditional mean:
+        #   log(r_i^2) = beta_0 + sum_{k in K_i} s_k(x_k) + eps
+        #
+        # Prediction:
+        #   log_scale_hat = E_hat[ log(r_i^2) | K_i ]
+        #                 ~= 2 * log(g_hat_i^1(K_i))
+        #
+        # Recover g_hat_i^1(K_i):
+        #   g_hat_i^1(K_i) = exp( 0.5 * log_scale_hat )
+        #
+        # Clip to [1e-6, inf) to avoid division by near-zero scale.
+        #
+        # Final LSNM residual (paper Eq. 14):
+        #   eta_hat_i = r_i / g_hat_i^1(K_i)
+        #             ~= g_i^1(K_i) * eta_i / g_hat_i^1(K_i)
+        #             ~= eta_i
+        # ---------------------------------------------------------------------
         try:
-            log_sq    = np.log(loc_resid ** 2 + 1e-8)
+            log_sq    = np.log(loc_resid ** 2 + 1e-8)   # log(r_i^2), +1e-8 avoids log(0)
             gam_scale = LinearGAM().fit(X_expl, log_sq)
-            log_scale = gam_scale.predict(X_expl)
-            scale     = np.clip(np.exp(0.5 * log_scale), 1e-6, None)
-            return loc_resid / scale
+            log_scale = gam_scale.predict(X_expl)        # E_hat[log(r_i^2) | K_i]
+            scale     = np.clip(np.exp(0.5 * log_scale), 1e-6, None)  # g_hat_i^1(K_i)
+            return loc_resid / scale                     # eta_hat_i  -- paper Eq. (14)
         except Exception:
-            return loc_resid    # scale failed: additive residual (CAM-UV fallback)
+            return loc_resid    # scale fit failed: return r_i (= CAM-UV / Pham fallback)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

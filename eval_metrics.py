@@ -21,7 +21,7 @@ extracted for evaluation — edges where both endpoint marks are fully resolved
     Definite bidirected x_i ↔ x_j :  arrowhead (>) at both ends
 
 Causal-learn PAG graph matrix encoding:
-    G.graph[i, j]  =  mark at the end of the edge pointing towards node j
+    G.graph[i, j]  =  mark at node i (the first-index endpoint)
         -1  →  tail  (–)
          1  →  arrowhead  (>)
          2  →  circle  (o)
@@ -132,24 +132,28 @@ def parse_fci_result(pag, p: int) -> tuple:
     B_est = np.zeros((p, p), dtype=int)
 
     G = pag.graph   # (p, p) endpoint-mark matrix
+    # Convention: G[a, b] = mark AT node a (first index).
+    # For x_j → x_i: G[j, i] = -1 (tail at j),  G[i, j] = 1 (arrowhead at i).
+    # For x_i ↔ x_j: G[i, j] = 1 and G[j, i] = 1 (arrowheads at both ends).
 
     for i in range(p):
         for j in range(p):
             if i == j:
                 continue
-            mark_at_i = G[j, i]   # mark at end pointing towards i (= endpoint at i)
-            mark_at_j = G[i, j]   # mark at end pointing towards j (= endpoint at j)
+            mark_at_j = G[j, i]   # mark AT node j  (for edge between i and j)
+            mark_at_i = G[i, j]   # mark AT node i  (for edge between i and j)
 
             # Skip if either mark is a circle (unresolved)
-            if mark_at_i == 2 or mark_at_j == 2:
+            if mark_at_j == 2 or mark_at_i == 2:
                 continue
 
-            # Definite directed  x_j → x_i  (arrow at i, tail at j)
-            if mark_at_i == 1 and mark_at_j == -1:
+            # Definite directed  x_j → x_i  (tail at j, arrowhead at i)
+            # graph[j, i] = -1  AND  graph[i, j] = 1
+            if mark_at_j == -1 and mark_at_i == 1:
                 A_est[i, j] = 1
 
             # Definite bidirected  x_i ↔ x_j  (both arrowheads, record once)
-            if mark_at_i == 1 and mark_at_j == 1 and i < j:
+            if mark_at_j == 1 and mark_at_i == 1 and i < j:
                 B_est[i, j] = 1
                 B_est[j, i] = 1
 
