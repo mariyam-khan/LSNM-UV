@@ -35,10 +35,63 @@ class LSNMUV(CAMUV):
     """
     LSNM-UV-Base: CAM-UV with location-scale residuals.
 
-    The only change relative to CAMUV is the override of ``_get_residual``.
-    All independence tests, parent-finding logic, and UBP/UCP detection are
-    inherited unchanged.
+    Two changes relative to CAMUV:
+
+    1. ``_get_residual`` is overridden to use the two-step GAMLSS LSNM residual
+       eta_hat_i = (x_i - f_hat_i^1(K_i)) / g_hat_i^1(K_i)  [paper Eq. 14].
+
+    2. ``fit`` is overridden to replace CAMUV's neighbourhood-gated UBP/UCP
+       detection with a full pairwise residual check.
+
+       CAMUV's original Algorithm 2 only tests pairs (i,j) that pass two gates:
+         (a) no directed edge found between them  (i not in P[j] and j not in P[i])
+         (b) they appear correlated in raw X       (i in N[j] and j in N[i])
+
+       Gate (b) uses raw X values (not residuals) and fails on LSNM data:
+       the hidden-cause signal is diluted by two layers of normalisation, so
+       true UBP/UCP pairs often appear uncorrelated in raw X and never enter N.
+       Removing gate (b) and testing ALL non-parent pairs with LSNM residuals
+       directly recovers pairs that the N-gate would otherwise discard.
+
+       Cost: O(d^2) HSIC tests instead of O(|N|) — same asymptotic complexity.
+       False-positive rate: ~alpha * C(d,2) per graph (e.g., 0.01 * 45 ≈ 0.45
+       extra invisible pairs expected by chance for d=10, alpha=0.01).
     """
+
+    def fit(self, X: np.ndarray):
+        """
+        Fit LSNM-UV-Base to X.
+
+        Replaces CAMUV's neighbourhood-gated UBP/UCP detection (Algorithm 2)
+        with a full pairwise LSNM-residual check over all pairs not already
+        assigned a directed edge.
+        """
+        from sklearn.utils.validation import check_array
+        X = check_array(X)
+        n, d = X.shape
+
+        # ── Algorithm 1: find directed edges (parent sets P) ──────────────────
+        # Inherited from CAMUV; uses LSNM _get_residual via _find_parents.
+        N = self._get_neighborhoods(X)
+        P = self._find_parents(X, self._num_explanatory_vals, N)
+
+        # ── Algorithm 2: UBP/UCP detection (full pairwise, no N gate) ─────────
+        # For each pair with no directed edge, test independence of LSNM
+        # residuals.  Dependence => invisible pair (UBP or UCP).
+        U = []
+        for i in range(d):
+            for j in range(i + 1, d):
+                # Skip pairs where a directed edge was already identified
+                if (i in P[j]) or (j in P[i]):
+                    continue
+                r_i = self._get_residual(X, i, P[i]).reshape(n, 1)
+                r_j = self._get_residual(X, j, P[j]).reshape(n, 1)
+                if not self._is_independent(r_i, r_j):
+                    U.append(set([i, j]))
+
+        self._U = U
+        self._P = P
+        return self._estimate_adjacency_matrix(X, P, U)
 
     def _get_residual(self, X: np.ndarray, explained_i: int, explanatory_ids) -> np.ndarray:
         """
