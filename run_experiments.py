@@ -22,6 +22,7 @@ Requirements: numpy, pandas, joblib, lingam, pygam, causal-learn
 Optional:     rpy2  +  R package ngBap  (for BANG)
 """
 
+import logging
 import time
 import numpy as np
 import pandas as pd
@@ -33,6 +34,8 @@ from eval_metrics import (
     directed_metrics, bidirected_metrics,
     parse_camuv_result, parse_fci_result, parse_bang_result,
 )
+
+log = logging.getLogger(__name__)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -64,10 +67,15 @@ def run_fci(X: np.ndarray, alpha: float = 0.01):
     after the LSNM normalisation step).  Replace with a non-parametric test
     (e.g. 'kci') for more robustness at the cost of runtime.
     """
+    import io, contextlib
     from causallearn.search.ConstraintBased.FCI import fci
     from causallearn.utils.cit import fisherz
-    p      = X.shape[1]
-    pag, _ = fci(X, independence_test_method=fisherz, alpha=alpha, verbose=False)
+    p = X.shape[1]
+    # Suppress FCI's tqdm progress bars and edge-print statements
+    with contextlib.redirect_stderr(io.StringIO()), \
+         contextlib.redirect_stdout(io.StringIO()):
+        pag, _ = fci(X, independence_test_method=fisherz, alpha=alpha,
+                      verbose=False, show_progress=False)
     return parse_fci_result(pag, p)
 
 
@@ -96,11 +104,13 @@ def run_bang(X: np.ndarray):
         with conv.context():
             r_X = ro.r.matrix(ro.FloatVector(X.flatten()), nrow=n, ncol=p, byrow=True)
             result = ngbap.bang(r_X, K=3, level=0.01, verbose=False, restrict=1)
+            # Parse inside the converter context so numpy conversion works
+            A_est, B_est = parse_bang_result(result, p)
 
-        return parse_bang_result(result, p)
+        return A_est, B_est
 
     except Exception as e:
-        print(f"[BANG] skipped ({e})")
+        log.warning("[BANG] skipped (%s)", e)
         return None, None
 
 
@@ -138,7 +148,7 @@ def run_single_trial(
         try:
             A_est, B_est = fn()
         except Exception as e:
-            print(f"  [{name}] n={n} seed={seed}: {e}")
+            log.warning("  [%s] n=%d seed=%d: %s", name, n, seed, e)
             failed = True
         runtime = time.perf_counter() - t0
 
@@ -201,10 +211,10 @@ def run_all_experiments(
         n_list = [100, 200, 300, 400, 500, 600, 700, 800, 900, 1000]
 
     tasks = [(n, seed) for n in n_list for seed in range(n_trials)]
-    print(f"Launching {len(tasks)} trials "
-          f"({len(n_list)} sample sizes × {n_trials} trials) …")
+    log.info("Launching %d trials (%d sample sizes x %d trials) ...",
+             len(tasks), len(n_list), n_trials)
 
-    all_rows = Parallel(n_jobs=n_jobs, verbose=5)(
+    all_rows = Parallel(n_jobs=n_jobs, verbose=0)(
         delayed(run_single_trial)(n, seed, alpha=alpha, d=d,
                                   include_bang=include_bang)
         for n, seed in tasks
@@ -212,7 +222,7 @@ def run_all_experiments(
 
     df = pd.DataFrame([row for trial in all_rows for row in trial])
     df.to_csv(save_path, index=False)
-    print(f"Saved → {save_path}")
+    log.info("Saved -> %s", save_path)
     return df
 
 
@@ -244,7 +254,7 @@ def run_alpha_sensitivity(
 
     df = pd.DataFrame(rows)
     df.to_csv(save_path, index=False)
-    print(f"Saved → {save_path}")
+    log.info("Saved -> %s", save_path)
     return df
 
 
@@ -280,7 +290,6 @@ def plot_results(
 
     plt.tight_layout()
     plt.savefig(save_path, dpi=150)
-    print(f"Saved → {save_path}")
     plt.show()
 
 
@@ -313,7 +322,6 @@ def plot_bidir_results(
 
     plt.tight_layout()
     plt.savefig(save_path, dpi=150)
-    print(f"Saved → {save_path}")
     plt.show()
 
 
@@ -340,7 +348,6 @@ def plot_alpha_sensitivity(
     ax.legend()
     plt.tight_layout()
     plt.savefig(save_path, dpi=150)
-    print(f"Saved → {save_path}")
     plt.show()
 
 
@@ -361,7 +368,6 @@ def plot_runtime(
     ax.legend()
     plt.tight_layout()
     plt.savefig(save_path, dpi=150)
-    print(f"Saved → {save_path}")
     plt.show()
 
 
@@ -370,6 +376,8 @@ def plot_runtime(
 # ─────────────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO)
+
     # ── Main experiment ───────────────────────────────────────────────────────
     df_main = run_all_experiments(
         n_list       = [100, 200, 300, 400, 500, 600, 700, 800, 900, 1000],

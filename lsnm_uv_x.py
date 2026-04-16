@@ -261,9 +261,6 @@ class LSNMUV_X(LSNMUV):
 
         Tests  (using LSNM residuals h = _get_residual):
 
-        (a) h(i, S_1) ⊥ h(j, S_2)
-                → visible non-edge  (A[i,j] = A[j,i] = 0)
-
         (b) h(i, S_1 ∪ {x_j}) ⊥ h(j, S_2)   (x_j included in x_i's regression)
                 → x_i is NOT a parent of x_j  (iNotParent)
 
@@ -273,11 +270,21 @@ class LSNMUV_X(LSNMUV):
         Resolution:
             iNotParent only   →  edge x_j → x_i  (A[i,j]=1, A[j,i]=0)
             jNotParent only   →  edge x_i → x_j  (A[j,i]=1, A[i,j]=0)
-            both iNotParent and jNotParent simultaneously
-                              →  visible non-edge
-            neither           →  pair remains NaN (invisible)
+            both or neither   →  pair remains NaN (invisible)
 
-        Follows Pham et al. (2025), Algorithm 3.
+        Note: the original Pham2025 test (a) h(i,S1) ⊥ h(j,S2) → non-edge is
+        intentionally omitted here.  NaN pairs arrive already confirmed as
+        hidden by Algorithm 2 (LSNM-UV-Base pairwise residual test).  Test (a)
+        uses different conditioning sets and can "absorb" the hidden-cause signal
+        via overcontrol (conditioning on another child of the shared u_k), giving
+        a spurious non-edge verdict.  Only directional evidence (b)/(c) is safe
+        to apply to these confirmed-hidden pairs.
+
+        However, when BOTH (b) and (c) succeed — both directions are ruled out —
+        this resolves the pair as a visible non-edge (set to 0), matching
+        cam-uv-x_extended.py's logic.
+
+        Follows Pham et al. (2025), Algorithm 3 (orientation step only).
         """
         n     = X.shape[0]
         p     = mat.shape[0]
@@ -306,54 +313,66 @@ class LSNMUV_X(LSNMUV):
 
             max_sz = min(self._max_regress_size, len(Q))
 
-            outer_break = False
             for sz_i in range(1, max_sz + 1):
-                if outer_break:
+                if isNonEdge:
                     break
                 for s1 in itertools.combinations(Q, sz_i):
-                    if outer_break:
+                    if isNonEdge:
                         break
                     for sz_j in range(1, max_sz + 1):
-                        if outer_break:
+                        if isNonEdge:
                             break
                         for s2 in itertools.combinations(Q, sz_j):
+                            if isNonEdge:
+                                break
                             expl_i = set(s1)
                             expl_j = set(s2)
 
                             r_i = self._get_residual(X, x_i, expl_i).reshape(n, 1)
                             r_j = self._get_residual(X, x_j, expl_j).reshape(n, 1)
 
-                            # (a) visible non-edge
-                            if self._is_independent(r_i, r_j):
-                                mat_new[x_i, x_j] = 0
-                                mat_new[x_j, x_i] = 0
-                                isNonEdge  = True
-                                outer_break = True
-                                break
+                            # ── Pham's test (a) gate ─────────────────────────
+                            # In cam-uv-x_extended.py, tests (b)/(c) are
+                            # inside an `else` that only fires when test (a)
+                            # fails (i.e., h(i,S1) and h(j,S2) are dependent).
+                            #
+                            # We intentionally omit both test (a) as a
+                            # resolution AND as a gate.  These pairs already
+                            # passed Algorithm 2's pairwise dependence check.
+                            # Using test (a) as a gate would skip directional
+                            # tests for (S1,S2) where the hidden signal is
+                            # absorbed — the same overcontrol concern that
+                            # motivates omitting test (a) as a resolution.
+                            # ─────────────────────────────────────────────────
 
-                            # (b) x_i not parent of x_j
+                            # (b) x_i not parent of x_j  (i.e., evidence for x_j → x_i)
                             r_i2 = self._get_residual(
                                 X, x_i, expl_i | {x_j}
                             ).reshape(n, 1)
                             if self._is_independent(r_i2, r_j):
                                 iNotParent = True
 
-                            # (c) x_j not parent of x_i
+                            # (c) x_j not parent of x_i  (i.e., evidence for x_i → x_j)
                             r_j2 = self._get_residual(
                                 X, x_j, expl_j | {x_i}
                             ).reshape(n, 1)
                             if self._is_independent(r_i, r_j2):
                                 jNotParent = True
 
-                            # Both not-parent: visible non-edge
+                            # Both ruled out → visible non-edge; stop searching
+                            # (matches cam-uv-x_extended.py inner-loop break)
                             if iNotParent and jNotParent:
                                 mat_new[x_i, x_j] = 0
                                 mat_new[x_j, x_i] = 0
-                                isNonEdge  = True
-                                outer_break = True
+                                isNonEdge = True
                                 break
 
-            # ── Resolve direction if possible ─────────────────────────────────
+            # ── Resolve pair ──────────────────────────────────────────────────
+            # Three outcomes (matching cam-uv-x_extended.py checkVisible):
+            #   both ruled out  → visible non-edge (already set above)
+            #   only i ruled out → x_j → x_i
+            #   only j ruled out → x_i → x_j
+            #   neither          → leave as NaN (invisible)
             if not isNonEdge:
                 if iNotParent and not jNotParent:
                     # x_j → x_i
@@ -363,6 +382,6 @@ class LSNMUV_X(LSNMUV):
                     # x_i → x_j
                     mat_new[x_j, x_i] = 1
                     mat_new[x_i, x_j] = 0
-                # if neither: leave as NaN
+                # neither True: leave as NaN (invisible)
 
         return mat_new

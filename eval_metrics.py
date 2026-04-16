@@ -28,7 +28,10 @@ Causal-learn PAG graph matrix encoding:
          0  →  no edge between i and j
 """
 
+import logging
 import numpy as np
+
+log = logging.getLogger(__name__)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -204,6 +207,6 @@ def parse_bang_result(r_output, p: int) -> tuple:
                     B_est[j, i] = 1
 
     except Exception as e:
-        print(f"[parse_bang_result] Warning: {e}")
+        log.warning("[parse_bang_result] %s", e)
 
     return A_est, B_est

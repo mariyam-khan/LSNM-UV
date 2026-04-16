@@ -77,13 +77,13 @@ recovers eta_i, whose independence structure across variables reveals the
 UBP/UCP structure.
 
 Nonlinear function form.
-    random_nlfunc is taken unchanged from Pham2025 cam-uv-x_functions.py:
+    random_nlfunc follows Maeda & Shimizu (2021) Eq. (8):
 
-        +/- ((v_j + c)^2 + b),   c ~ U(-1,1),  b ~ U(-1,1),  sign = +/-1
+        (v_j + a)^c + b,   a ~ U(-5,5),  b ~ U(-1,1),  c in {2, 3}
 
     This function is used identically for:
-      - Layer 2 (hidden parents -> eta): additive, same as Pham2025
-      - Layer 1 location sum (observed parents -> loc): additive, same as Pham2025
+      - Layer 2 (hidden parents -> eta): additive sum over hidden parents
+      - Layer 1 location sum (observed parents -> loc): additive sum
       - Layer 1 scale sum (observed parents -> scale_log): LSNM addition only
 
     The scale_log sum is normalised by its std before exponentiation, then
@@ -133,8 +133,8 @@ Summary of Design Choices
     n_cc = 2 hidden common causes       Matches Maeda21; each creates one UBP
     n_int = 2 hidden intermediates      Extended from Maeda21; each creates one UCP
     Edge probability 0.3 (ER)          Matches Maeda21 Section 5.1
-    random_nlfunc: +/-((x+c)^2+b)      Identical to Pham2025 cam-uv-x_functions.py
-    Layer 2 (eta): additive loop        Identical to Pham2025 gen_data_matrix
+    random_nlfunc: (x+a)^c+b            Maeda21 Eq. (8): a~U(-5,5), c in {2,3}
+    Layer 2 (eta): additive loop        Sum of random_nlfunc over hidden parents
     Layer 1: loc + scale*eta            LSNM-specific; scale depends on K_i
     Scale clip [0.1, 10]                LSNM-specific; prevents exp() overflow
     Mean centering after generation     Prevents one-sided distributions from x^2 terms
@@ -148,28 +148,34 @@ import networkx as nx
 
 
 # -----------------------------------------------------------------------------
-# Nonlinear function -- identical to Pham2025 cam-uv-x_functions.py
-
+# Nonlinear function -- Maeda & Shimizu (2021) Eq. (8)
+#
+# Paper Section 6.1: "All nonlinear functions follow the polynomial form
+# of Maeda & Shimizu (2021) Eq. (8)."
+#
 # gen_noise replaced by eps_i = rng.standard_normal(n) inside _gen_lsnm_variable
 # for us each noise eps_i is N(0,1) independently drawn for each node
 # -----------------------------------------------------------------------------
 
 def random_nlfunc(x: np.ndarray, rng: np.random.Generator) -> np.ndarray:
     """
-    Random nonlinear function taken unchanged from Pham2025.
+    Random nonlinear function following Maeda & Shimizu (2021) Eq. (8).
 
-    Computes  +/- ((x + c)^2 + b)  with:
-        c ~ Uniform(-1, 1)   (horizontal shift)
+    Computes  (x + a)^c + b  with:
+        a ~ Uniform(-5, 5)   (horizontal shift)
         b ~ Uniform(-1, 1)   (vertical shift)
-        sign ~ {-1, +1} with equal probability
+        c ~ {2, 3} with equal probability  (polynomial degree)
 
-    This is the building block for both the location sums and the scale_log sum.
-    Degree is always 2 (quadratic), shift range is narrow: c in (-1, 1).
+    This matches the CAMUV-data-gene.ipynb reference (causal_func) and
+    the paper's Section 6.1 specification.  Compared to Pham2025's form
+    (a in (-1,1), c=2 always, ±1 sign flip), this uses a wider shift
+    range and includes odd-degree (c=3) terms that produce asymmetric
+    functions.
     """
-    c = rng.uniform(-1.0, 1.0)
-    z = (x + c) ** 2
-    z = z + rng.uniform(-1.0, 1.0)
-    return z if rng.random() < 0.5 else -z
+    a = rng.uniform(-5.0, 5.0)
+    b = rng.uniform(-1.0, 1.0)
+    c = rng.choice([2, 3])
+    return (x + a) ** c + b
 
 
 # -----------------------------------------------------------------------------
@@ -405,8 +411,12 @@ def compute_true_admg(G_full: np.ndarray, p: int, cc_pairs: list, int_pairs: lis
     for (j, i) in int_pairs:
         B[i, j] = 1;  B[j, i] = 1
 
-    # Enforce bow-free: clear any directed edge that is also a UBP/UCP target
-    A[B == 1] = 0
+    # Verify bow-free by construction (should never fail given correct _build_full_graph)
+    overlap = int(np.sum((A == 1) & (B == 1)))
+    assert overlap == 0, (
+        f"Bow-free violation: {overlap} pairs have both directed and bidirected edges. "
+        f"This indicates a bug in _build_full_graph."
+    )
 
     return A, B
 
