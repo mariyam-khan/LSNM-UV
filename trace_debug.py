@@ -40,50 +40,80 @@ from lingam.hsic import hsic_test_gamma
 
 # =============================================================================
 # DATA GENERATION
+# Uses exactly the same functions as lsnm_data_gen.py:
+#   random_nlfunc  — Maeda & Shimizu (2021) Eq. (8)
+#   _gen_lsnm_variable — two-level LSNM (paper Eq. 1/2/7)
 # =============================================================================
+
+from lsnm_data_gen import random_nlfunc, _gen_lsnm_variable
+
 
 def gen_simple_lsnm(n, seed):
     """
     Generate LSNM data from the minimal hidden-cause graph.
 
-    u ~ N(0,1)                          hidden common cause
-    x0 = f0(u) + g0(u) * eps0           observed, heteroscedastic
-    x1 = f1(u) + g1(u) * eps1           observed, heteroscedastic
+    Graph (full, including hidden variable):
+        u -> x0
+        u -> x1
+        No direct edge between x0 and x1.
 
-    The key property: x0 and x1 are DEPENDENT (share u), but neither
-    is a parent of the other.  A correct algorithm should output x0 <-> x1.
+    Variable layout:
+        x0 = observed variable 0   (index 0)
+        x1 = observed variable 1   (index 1)
+        u  = hidden common cause   (index 2)
+
+    Generation order (topological):
+        1. u  — root node, no parents:
+               eta_u = eps_u  (no hidden parents, no observed parents)
+               v_u = eta_u
+        2. x0 — observed parents K_0 = {} (empty), hidden parents Q_0 = {u}:
+               Layer 2: eta_0 = f_0^2(u) + g_0^2(u) * eps_0
+               Layer 1: v_0 = eta_0  (K_0 empty, so f_0^1=0, g_0^1=1)
+        3. x1 — observed parents K_1 = {} (empty), hidden parents Q_1 = {u}:
+               Layer 2: eta_1 = f_1^2(u) + g_1^2(u) * eps_1
+               Layer 1: v_1 = eta_1  (K_1 empty, so f_1^1=0, g_1^1=1)
+
+    Key structural property:
+        x0 and x1 share hidden parent u, so eta_0 and eta_1 are DEPENDENT.
+        But neither is a direct parent of the other.
+        Ground truth ADMG: x0 <-> x1 (bidirected / invisible pair).
+
+    Uses _gen_lsnm_variable from lsnm_data_gen.py — exactly the same
+    data generation as the full experiment pipeline (gen_lsnm_experiment).
     """
     rng = np.random.default_rng(seed)
 
-    # Hidden cause
-    u = rng.standard_normal(n)
+    # Step 1: Generate u (hidden common cause)
+    # u has no parents at all, so _gen_lsnm_variable with empty lists
+    # just returns normalised eps_u ~ N(0,1)
+    u = _gen_lsnm_variable(
+        obs_parent_vals=[],    # K_u = {} (no observed parents)
+        hid_parent_vals=[],    # Q_u = {} (no hidden parents — u is a root)
+        rng=rng,
+        n=n,
+    )
 
-    # Independent noise for each observed variable
-    eps0 = rng.standard_normal(n)
-    eps1 = rng.standard_normal(n)
+    # Step 2: Generate x0 (observed, child of hidden u)
+    # K_0 = {} (no observed parents), Q_0 = {u}
+    # Layer 2 builds eta_0 from u:  eta_0 = f_0^2(u) + g_0^2(u) * eps_0
+    # Layer 1 is trivial (K_0 empty): x0 = eta_0
+    x0 = _gen_lsnm_variable(
+        obs_parent_vals=[],    # K_0 = {} (no observed parents of x0)
+        hid_parent_vals=[u],   # Q_0 = {u} (hidden parent)
+        rng=rng,
+        n=n,
+    )
 
-    # Nonlinear location functions: f(u) = (u + shift)^2 + offset
-    f0 = (u + rng.uniform(-3, 3)) ** 2 + rng.uniform(-1, 1)
-    f1 = (u + rng.uniform(-3, 3)) ** 2 + rng.uniform(-1, 1)
+    # Step 3: Generate x1 (observed, child of hidden u)
+    # Same structure as x0 but with independently drawn random functions
+    x1 = _gen_lsnm_variable(
+        obs_parent_vals=[],    # K_1 = {} (no observed parents of x1)
+        hid_parent_vals=[u],   # Q_1 = {u} (hidden parent)
+        rng=rng,
+        n=n,
+    )
 
-    # Nonlinear scale functions: g(u) = clip(exp(normalized (u+shift)^2), 0.1, 10)
-    # This creates HETEROSCEDASTICITY: the noise variance of x0 depends on u
-    log_g0 = (u + rng.uniform(-3, 3)) ** 2
-    log_g0 = log_g0 / (np.std(log_g0) + 1e-8)    # normalise before exp
-    g0 = np.clip(np.exp(log_g0), 0.1, 10.0)       # scale in [0.1, 10]
-
-    log_g1 = (u + rng.uniform(-3, 3)) ** 2
-    log_g1 = log_g1 / (np.std(log_g1) + 1e-8)
-    g1 = np.clip(np.exp(log_g1), 0.1, 10.0)
-
-    # LSNM:  x = location + scale * noise
-    x0 = f0 + g0 * eps0
-    x1 = f1 + g1 * eps1
-
-    # Normalise to zero mean, unit variance (standard practice)
-    x0 = (x0 - np.mean(x0)) / (np.std(x0) + 1e-8)
-    x1 = (x1 - np.mean(x1)) / (np.std(x1) + 1e-8)
-
+    # Return only the observed variables (x0, x1), not u
     return np.column_stack([x0, x1])
 
 
