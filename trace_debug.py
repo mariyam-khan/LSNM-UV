@@ -7,33 +7,17 @@ Data:   LSNM (heteroscedastic), generated with the same functions as the
 
 Both methods use the exact same CAM-UV algorithm (Maeda & Shimizu 2021).
 The ONLY difference is the residual function:
-  - CAMUV_Additive: x_i - GAM(K_i)          (original, location-only)
-  - CAMUV_LSNM:     (x_i - f(K_i)) / g(K_i) (two-step GAMLSS, Eq. 14)
+  - CAMUV (camuv.py):       x_i - GAM(K_i)          (original, location-only)
+  - CAMUV_LSNM (camuv_lsnm.py): (x_i - f(K_i)) / g(K_i) (two-step GAMLSS, Eq. 14)
 
 Run:  python trace_debug.py
 """
 
 import numpy as np
-from pygam import LinearGAM
 
 from lsnm_data_gen import _gen_lsnm_variable
+from camuv import CAMUV
 from camuv_lsnm import CAMUV_LSNM
-
-
-# ── Additive-residual variant (same algorithm, only _get_residual differs) ──
-
-class CAMUV_Additive(CAMUV_LSNM):
-    """CAMUV_LSNM with _get_residual overridden to plain additive residual."""
-
-    def _get_residual(self, X, explained_i, explanatory_ids):
-        explanatory_ids = list(explanatory_ids)
-        if len(explanatory_ids) == 0:
-            return X[:, explained_i]
-        try:
-            gam = LinearGAM().fit(X[:, explanatory_ids], X[:, explained_i])
-            return X[:, explained_i] - gam.predict(X[:, explanatory_ids])
-        except Exception:
-            return X[:, explained_i] - X[:, explained_i].mean()
 
 
 # ── Data generation ──────────────────────────────────────────────────────────
@@ -58,7 +42,7 @@ if __name__ == "__main__":
     n_seeds = 10
 
     print("=" * 70)
-    print("DIAGNOSTIC: CAMUV additive vs CAMUV_LSNM residuals")
+    print("DIAGNOSTIC: CAMUV (additive) vs CAMUV_LSNM residuals")
     print(f"Graph: u -> x0, u -> x1  (ground truth: x0 <-> x1)")
     print(f"n={n}, alpha={alpha}, seeds=0..{n_seeds-1}")
     print("=" * 70)
@@ -68,7 +52,8 @@ if __name__ == "__main__":
     for seed in range(n_seeds):
         X = gen_simple_lsnm(n, seed)
 
-        for label, cls in [("ADDITIVE", CAMUV_Additive), ("LSNM", CAMUV_LSNM)]:
+        for label, cls in [("ADDITIVE (camuv.py)", CAMUV),
+                           ("LSNM (camuv_lsnm.py)", CAMUV_LSNM)]:
             print(f"\n{'='*70}")
             print(f"  SEED={seed}  METHOD={label}")
             print(f"{'='*70}")
@@ -88,7 +73,7 @@ if __name__ == "__main__":
             else:
                 print(f"  -> MISSED: empty graph")
 
-            if label == "ADDITIVE":
+            if "ADDITIVE" in label:
                 results.append({'seed': seed, 'add_bidir': has_bidir, 'add_dir': has_dir})
             else:
                 results[-1]['lsnm_bidir'] = has_bidir
