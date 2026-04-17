@@ -34,6 +34,7 @@ class CAMUV_LSNM:
         independence="hsic",
         ind_corr=0.5,
         prior_knowledge=None,
+        verbose=False,
     ):
         # Check parameters
         if num_explanatory_vals <= 0:
@@ -53,6 +54,7 @@ class CAMUV_LSNM:
         self._independence = independence
         self._ind_corr = ind_corr
         self._pk_dict = self._make_pk_dict(prior_knowledge)
+        self._verbose = verbose
 
     def fit(self, X):
         """Fit the model to X.  Identical to CAMUV.fit."""
@@ -65,11 +67,18 @@ class CAMUV_LSNM:
 
         U = []
 
+        if self._verbose:
+            print(f"\n--- Algorithm 2: UBP/UCP detection ---")
+            print(f"  P = {P}")
         for i in range(d):
             for j in range(d)[i + 1 :]:
                 if (i in P[j]) or (j in P[i]):
+                    if self._verbose:
+                        print(f"  ({i},{j}): SKIP — gate (a) directed edge exists")
                     continue
                 if (i not in N[j]) or (j not in N[i]):
+                    if self._verbose:
+                        print(f"  ({i},{j}): SKIP — gate (b) not in neighbourhood")
                     continue
 
                 i_residual = self._get_residual(X, i, P[i])
@@ -79,6 +88,10 @@ class CAMUV_LSNM:
                 if not self._is_independent(in_X, in_Y):
                     if not set([i, j]) in U:
                         U.append(set([i, j]))
+                        if self._verbose:
+                            print(f"  ({i},{j}): DEPENDENT → UBP detected!")
+                elif self._verbose:
+                    print(f"  ({i},{j}): independent → no UBP")
 
         self._U = U
         self._P = P
@@ -230,6 +243,8 @@ class CAMUV_LSNM:
         n = X.shape[0]
         d = X.shape[1]
         N = [set() for i in range(d)]
+        if self._verbose:
+            print(f"\n--- _get_neighborhoods ---")
         for i in range(d):
             for j in range(d)[i + 1 :]:
                 in_X = np.reshape(X[:, i], [n, 1])
@@ -237,6 +252,12 @@ class CAMUV_LSNM:
                 if not self._is_independent(in_X, in_Y):
                     N[i].add(j)
                     N[j].add(i)
+                    if self._verbose:
+                        print(f"  HSIC(x{i}, x{j}): dependent → added to N")
+                elif self._verbose:
+                    print(f"  HSIC(x{i}, x{j}): independent → NOT in N")
+        if self._verbose:
+            print(f"  N = {N}")
         return N
 
     def _find_parents(self, X, maxnum_vals, N):
@@ -246,30 +267,46 @@ class CAMUV_LSNM:
         t = 2
         Y = copy.deepcopy(X)
 
+        if self._verbose:
+            print(f"\n--- _find_parents ---")
+
         while True:
             changed = False
             variables_set_list = list(itertools.combinations(set(range(d)), t))
+            if self._verbose:
+                print(f"\n  While-loop: t={t}, subsets={variables_set_list}")
             for variables_set in variables_set_list:
                 variables_set = set(variables_set)
 
                 if not self._check_identified_causality(variables_set, P):
+                    if self._verbose:
+                        print(f"  {variables_set}: skip (_check_identified_causality=False)")
                     continue
 
                 child, is_independence_with_K = self._get_child(
                     X, variables_set, P, N, Y
                 )
                 if child is None:
+                    if self._verbose:
+                        print(f"  {variables_set}: _get_child → None")
                     continue
                 if not is_independence_with_K:
+                    if self._verbose:
+                        print(f"  {variables_set}: _get_child → child={child}, but NOT independent of parents")
                     continue
 
                 parents = variables_set - {child}
-                if not self._check_independence_withou_K(parents, child, P, N, Y):
+                withou_k = self._check_independence_withou_K(parents, child, P, N, Y)
+                if self._verbose:
+                    print(f"  {variables_set}: _check_independence_withou_K(parents={parents}, child={child}) = {withou_k}")
+                if not withou_k:
                     continue
 
                 for parent in parents:
                     P[child].add(parent)
                     changed = True
+                    if self._verbose:
+                        print(f"  *** PARENT ASSIGNED: x{parent} → x{child}  (P={P}) ***")
                     Y = self._get_residuals_matrix(X, Y, P, child)
 
             if changed:
@@ -279,6 +316,9 @@ class CAMUV_LSNM:
                 if t > maxnum_vals:
                     break
 
+        # Prune non-parents
+        if self._verbose:
+            print(f"\n  Pruning: P before = {P}")
         for i in range(d):
             non_parents = set()
             for j in P[i]:
@@ -288,7 +328,13 @@ class CAMUV_LSNM:
                 in_Y = np.reshape(residual_j, [n, 1])
                 if self._is_independent(in_X, in_Y):
                     non_parents.add(j)
+                    if self._verbose:
+                        print(f"  Prune: x{j} removed from P[{i}] (independent)")
+                elif self._verbose:
+                    print(f"  Prune: x{j} kept in P[{i}] (dependent)")
             P[i] = P[i] - non_parents
+        if self._verbose:
+            print(f"  Pruning: P after = {P}")
 
         return P
 
@@ -317,12 +363,17 @@ class CAMUV_LSNM:
                 continue
 
             if not self._check_correlation(child, parents, N):
+                if self._verbose:
+                    print(f"    _get_child: child={child}, parents={parents} → _check_correlation=False")
                 continue
 
             residual = self._get_residual(X, child, parents | P[child])
             in_X = np.reshape(residual, [n, 1])
             in_Y = np.reshape(Y[:, list(parents)], [n, len(parents)])
             is_ind, value = self._is_independent_by(in_X, in_Y, prev_independence)
+            if self._verbose:
+                print(f"    _get_child: child={child}, parents={parents} | resid(x{child}|{parents | P[child]}) vs Y[{list(parents)}]: "
+                      f"val={value:.6f}, prev={prev_independence:.6f}, ind={is_ind}")
             if is_ind:
                 prev_independence = value
                 max_independence_child = child
@@ -331,6 +382,10 @@ class CAMUV_LSNM:
             is_independent = prev_independence > self._alpha
         elif self._independence == "fcorr":
             is_independent = prev_independence < self._ind_corr
+
+        if self._verbose:
+            print(f"    _get_child result: child={max_independence_child}, is_independent={is_independent} "
+                  f"(best={prev_independence:.6f} vs alpha={self._alpha})")
 
         return max_independence_child, is_independent
 
